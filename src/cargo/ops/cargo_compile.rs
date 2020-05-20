@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::core::compiler::standard_lib;
-use crate::core::compiler::unit_dependencies::build_unit_dependencies;
+use crate::core::compiler::unit_dependencies::{build_unit_dependencies, UnitGraph};
 use crate::core::compiler::{BuildConfig, BuildContext, Compilation, Context};
 use crate::core::compiler::{CompileKind, CompileMode, RustcTargetData, Unit};
 use crate::core::compiler::{DefaultExecutor, Executor, UnitInterner};
@@ -260,11 +260,14 @@ pub fn compile_with_exec<'a>(
     compile_ws(ws, options, exec)
 }
 
-pub fn compile_ws<'a>(
-    ws: &Workspace<'a>,
-    options: &CompileOptions<'a>,
-    exec: &Arc<dyn Executor>,
-) -> CargoResult<Compilation<'a>> {
+pub fn prepare_compile_context_for<'cfg, T: 'cfg, F>(
+    ws: &Workspace<'cfg>,
+    options: &CompileOptions<'cfg>,
+    f: F,
+) -> CargoResult<T>
+where
+    F: for<'a> FnOnce(&'a BuildContext<'a, 'cfg>, &'a [Unit<'a>], UnitGraph<'a>) -> CargoResult<T>,
+{
     let CompileOptions {
         config,
         ref build_config,
@@ -277,7 +280,7 @@ pub fn compile_ws<'a>(
         ref target_rustc_args,
         ref local_rustdoc_args,
         rustdoc_document_private_items,
-        ref export_dir,
+        ..
     } = *options;
 
     match build_config.mode {
@@ -490,13 +493,19 @@ pub fn compile_ws<'a>(
         &std_roots,
     )?;
 
-    let ret = {
-        let _p = profile::start("compiling");
-        let cx = Context::new(config, &bcx, unit_dependencies, build_config.requested_kind)?;
-        cx.compile(&units, export_dir.clone(), exec)?
-    };
+    f(&bcx, &units, unit_dependencies)
+}
 
-    Ok(ret)
+pub fn compile_ws<'a>(
+    ws: &Workspace<'a>,
+    options: &CompileOptions<'a>,
+    exec: &Arc<dyn Executor>,
+) -> CargoResult<Compilation<'a>> {
+    prepare_compile_context_for(ws, options, |bcx, units, unit_dependencies| {
+        let _p = profile::start("compiling");
+        let cx = Context::new(&options.config, bcx, unit_dependencies, options.build_config.requested_kind)?;
+        cx.compile(&units, options.export_dir.clone(), exec)
+    })
 }
 
 impl FilterRule {
